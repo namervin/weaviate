@@ -150,48 +150,9 @@ func (m *Migrator) UpdateShardStatus(ctx context.Context, className, shardName, 
 	return idx.updateShardStatus(ctx, shardName, targetStatus)
 }
 
-// AddPartitions add partitions to the index class
-// Returns an error if the index doesn't exit or if shard exists already
-func (m *Migrator) AddPartitions(ctx context.Context, class *models.Class, partitions []string) (err error) {
-	idx := m.db.GetIndex(schema.ClassName(class.Class))
-	if idx == nil {
-		return fmt.Errorf("cannot find index for %q", class.Class)
-	}
-	shards := make([]*Shard, 0, len(partitions))
-	defer func() {
-		if err != nil {
-			for _, shard := range shards {
-				if err := shard.drop(); err != nil {
-					m.logger.WithField("action", "add_partition").
-						WithField("class", class.Class).
-						Errorf("cannot drop self created shard %s: %w", err)
-				}
-			}
-		}
-	}()
-
-	for _, name := range partitions {
-		if shard := idx.shards.Load(name); shard != nil {
-			return fmt.Errorf("partition %q already exists", name)
-		}
-		shard, err := NewShard(ctx, nil, name, idx, class, idx.centralJobQueue)
-		if err != nil {
-			return fmt.Errorf("cannot create partition: %w", err)
-		}
-
-		shards = append(shards, shard)
-	}
-
-	for i, name := range partitions {
-		idx.shards.Store(name, shards[i])
-	}
-
-	return nil
-}
-
 // CreatePartitions creates new partitions and returns a commit func
 // that can be used to either commit or rollback the partitions
-func (m *Migrator) CreatePartitions(ctx context.Context, class *models.Class, partitions []string) (commit func(success bool), err error) {
+func (m *Migrator) NewPartitions(ctx context.Context, class *models.Class, partitions []string) (commit func(success bool), err error) {
 	idx := m.db.GetIndex(schema.ClassName(class.Class))
 	if idx == nil {
 		return nil, fmt.Errorf("cannot find index for %q", class.Class)

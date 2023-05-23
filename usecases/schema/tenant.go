@@ -83,20 +83,6 @@ func (m *Manager) onAddPartitions(ctx context.Context,
 			st.AddPartition(p.Name, p.Nodes)
 		}
 	}
-
-	st.SetLocalName(m.clusterState.LocalName())
-	m.shardingStateLock.Lock()
-	curState := m.state.ShardingState[request.ClassName]
-	m.state.ShardingState[request.ClassName] = st
-	m.shardingStateLock.Unlock()
-
-	if err := m.saveSchema(ctx); err != nil {
-		m.shardingStateLock.Lock() // rollback
-		m.state.ShardingState[request.ClassName] = curState
-		m.shardingStateLock.Unlock()
-		return err
-	}
-
 	shards := make([]string, 0, len(request.Partitions))
 	for _, p := range request.Partitions {
 		if st.IsShardLocal(p.Name) {
@@ -109,12 +95,27 @@ func (m *Manager) onAddPartitions(ctx context.Context,
 		return fmt.Errorf("class %q does not exist in schema", request.ClassName)
 	}
 
-	// this should actually not fail but just in case
-	// TODO: make sure AddPartitions() never fails
-	if err := m.migrator.AddPartitions(ctx, class, shards); err != nil {
+	commit, err := m.migrator.NewPartitions(ctx, class, shards)
+	if err != nil {
 		m.logger.WithField("action", "add_partitions").
 			WithField("class", request.ClassName).Error(err)
 	}
+
+	st.SetLocalName(m.clusterState.LocalName())
+	m.shardingStateLock.Lock()
+	curState := m.state.ShardingState[request.ClassName]
+	m.state.ShardingState[request.ClassName] = st
+	m.shardingStateLock.Unlock()
+
+	if err := m.saveSchema(ctx); err != nil {
+		m.shardingStateLock.Lock() // rollback
+		m.state.ShardingState[request.ClassName] = curState
+		commit(false)
+		m.shardingStateLock.Unlock()
+		return err
+	}
+
+	commit(true)
 	return nil
 }
 
