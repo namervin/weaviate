@@ -150,23 +150,42 @@ func (m *Migrator) UpdateShardStatus(ctx context.Context, className, shardName, 
 	return idx.updateShardStatus(ctx, shardName, targetStatus)
 }
 
-func (m *Migrator) AddPartitions(ctx context.Context, class *models.Class, names []string) error {
+// AddPartitions add partitions to the index class
+// Returns an error if the index doesn't exit or if shard exists already
+func (m *Migrator) AddPartitions(ctx context.Context, class *models.Class, partitions []string) (err error) {
 	idx := m.db.GetIndex(schema.ClassName(class.Class))
 	if idx == nil {
-		return fmt.Errorf("cannot add property to a non-existing index for class %q", class.Class)
+		return fmt.Errorf("cannot find index for %q", class.Class)
 	}
-	shards := []string{}
-	for _, name := range names {
-		if err := idx.addNewShard(ctx, class, name); err != nil {
-			shards = append(shards, name)
-			m.logger.WithField("action", "add_partition").
-				WithField("class", class.Class).
-				WithField("shard", name).Error(err)
+	shards := make([]*Shard, 0, len(partitions))
+	defer func() {
+		if err != nil {
+			for _, shard := range shards {
+				if err := shard.drop(); err != nil {
+					m.logger.WithField("action", "add_partition").
+						WithField("class", class.Class).
+						Errorf("cannot drop self created shard %s: %w", err)
+				}
+			}
 		}
+	}()
+
+	for _, name := range partitions {
+		if shard := idx.shards.Load(name); shard != nil {
+			return fmt.Errorf("partition %q already exists", name)
+		}
+		shard, err := NewShard(ctx, nil, name, idx, class, idx.centralJobQueue)
+		if err != nil {
+			return fmt.Errorf("cannot create partition: %w", err)
+		}
+
+		shards = append(shards, shard)
 	}
-	if len(shards) > 0 {
-		return fmt.Errorf("could not create shards: %v", shards)
+
+	for i, name := range partitions {
+		idx.shards.Store(name, shards[i])
 	}
+
 	return nil
 }
 
