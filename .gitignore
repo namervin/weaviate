@@ -104,3 +104,4 @@ benchmark_results_*.json
 
 # local credentials
 creds.json
+docker-compose.yml
